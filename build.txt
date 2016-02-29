@@ -1,2 +1,2 @@
-fpm --debug-workspace -s python -t deb --config-files etc/gitlab-webhook-receiver.conf .
-fpm --debug-workspace -s python -t rpm --config-files etc/gitlab-webhook-receiver.conf .
+fpm -s python -t deb --config-files etc/gitlab-webhook-receiver.conf --after-install post-inst.sh --after-remove post-uninst.sh .
+fpm -s python -t rpm --config-files etc/gitlab-webhook-receiver.conf --after-install post-inst.sh --after-remove post-uninst.sh .
