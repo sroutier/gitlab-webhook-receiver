@@ -64,7 +64,7 @@ git_project = Config.get("general", 'git_project') or "ops"
 hook_url = Config.get("general", 'hook_url')
 
 ssl_verify = Config.getboolean("general", "ssl_verify")
-if Config.hasoption("general", "ssl_ca_cert") and ssl_verify:
+if Config.has_option("general", "ssl_ca_cert") and ssl_verify:
     ssl_verify = Config.get("general", "ssl_ca_cert")
 
 
