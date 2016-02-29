@@ -1,6 +1,7 @@
 #!/usr/bin/python -tt
 #
 # Copyright (C) 2012 Shawn Sterling <shawn@systemtemplar.org>
+#               2016 Guillaume Espanel <guillaume.espanel@objectif-libre.com>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -21,41 +22,46 @@
 #
 # The latest version of this code will be found on my github page:
 # https://github.com/shawn-sterling/gitlab-webhook-receiver
+#
+# For Objectif Libre usage, it's
+# https://github.com/ObjectifLibre/gitlab-webhook-receiver
 
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
+import argparse
 import json
 import logging
 import logging.handlers
-import os
-import re
-import shutil
-import subprocess
+import requests
+import urlparse
+
+try:
+    import configparser
+except ImportError:
+    import ConfigParser as configparser
+
+# Enabling debugging at http.client level (requests->urllib3->http.client)
+# you will see the REQUEST, including HEADERS and DATA, and RESPONSE with
+# HEADERS but without DATA.
+# the only thing missing will be the response.body which is not logged.
 
 
-############################################################
-##### You will likely need to change some of the below #####
+CONFIG_FILE = "/etc/gitlab-webhook-receiver.conf"
 
-# log file for this script
-log_file = '/var/lib/puppet/gitlab-webhook-receiver/webhook.log'
+arg_parser = argparse.ArgumentParser(description='Forward webhooks to '
+                                     'the puppet Code Manager')
+arg_parser.add_argument('--config', help='Path to the %(prog)s configuration',
+                        default=CONFIG_FILE)
+args = arg_parser.parse_args()
 
-# where the puppet base git dir is
-git_dir = "/etc/puppet/environments"
+Config = configparser.ConfigParser()
+Config.read(args.config)
 
-# the puppet master environment
-git_master_dir = "/etc/puppet/environments/master"
+log_file = Config.get("general", 'log_file') or "/var/log/gitlab-webhook.log"
+git_project = Config.get("general", 'git_project') or "ops"
+hook_url = Config.get("general", 'hook_url')
 
-# this is the name of the gitlab project name
-git_project = "newpuppet"
-
-# this is the git ssh account
-git_ssh = "git@github.com"
-
+log_level = logging.getLevelName(Config.get("general", "log_level")) or "DEBUG"
 log_max_size = 25165824         # 24 MB
-log_level = logging.INFO
-#log_level = logging.DEBUG      # DEBUG is quite verbose
-
-##### You should stop changing things unless you know what you are doing #####
-##############################################################################
 
 log = logging.getLogger('log')
 log.setLevel(log_level)
@@ -70,89 +76,11 @@ log.addHandler(log_handler)
 
 class webhookReceiver(BaseHTTPRequestHandler):
 
-    def run_it(self, cmd):
-        """
-            runs a command
-        """
-        p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT)
-        log.debug('running:%s' % cmd)
-        p.wait()
-        if p.returncode != 0:
-            log.critical("Non zero exit code:%s executing: %s" % (p.returncode,
-                                                                  cmd))
-        return p.stdout
-
-    def git_cleanup(self):
-        """
-            cleans up the master, does a prune origin
-        """
-        log.debug('git_cleanup begins')
-        os.chdir(git_master_dir)
-        cmd = "git reset --hard HEAD"
-        self.run_it(cmd)
-        cmd = "git pull"
-        self.run_it(cmd)
-        cmd = "git remote prune origin"
-        self.run_it(cmd)
-        log.debug('git_cleanup ends')
-
-    def git_handle_branches(self):
-        """
-            gets a list of branches, does a reset then pull for each branch.
-            clones any non existing branches.
-        """
-        log.debug('git_handle_branches begins')
-        current_branches = []
-        cmd = "git branch -a"
-        output = self.run_it(cmd)
-        for branch in output:
-            branch = re.sub("\*", "", branch)
-            branch = re.sub("\s+", "", branch)
-            if not re.search("HEAD", branch):
-                if re.search("/", branch):
-                    short_name = branch.split('/')[2]
-                    if not short_name == "master":
-                        current_branches.append(short_name)
-                        fwd = os.path.join(git_dir, short_name)
-                        if os.path.isdir(fwd):
-                            os.chdir(fwd)
-                            log.debug('cwd:%s' % fwd)
-                            cmd = "git reset --hard HEAD"
-                            output = self.run_it(cmd)
-                            cmd = "git pull"
-                            output = self.run_it(cmd)
-                        else:
-                            os.chdir(git_dir)
-                            cmd = "git clone -b %s %s:%s %s" % (
-                                short_name, git_ssh, git_project, short_name)
-                            output = self.run_it(cmd)
-        log.debug('git_handle_branches ends')
-        return current_branches
-
-    def git_remove_stale_branches(self, current_branches):
-        """
-            removes any directories that don't have a branch name (ignores
-            production dir/symlink)
-        """
-        log.debug('remove stale branches begins')
-        # remove stale directories (deleted branches)
-        if len(current_branches) > 1:
-            current_directories = os.listdir(git_dir)
-            for branch in current_branches:
-                current_directories.remove(branch)
-            # a production symlink must exist for puppet, ignore this dir
-            if "production" in current_directories:
-                current_directories.remove("production")
-            if len(current_directories) > 0:
-                for branch in current_directories:
-                    fwd = os.path.join(git_dir, branch)
-                    log.debug("trying to remove:%s" % fwd)
-                    try:
-                        shutil.rmtree(fwd)
-                    except (IOError, OSError) as e:
-                        log.critical('Exception:%s removing dir:%s' % (fwd, e))
-        log.debug('remove stale branches ends')
+    def get_token_from_request(self):
+        token = urlparse.parse_qs(
+            urlparse.urlparse(self.path).query
+        ).get('token')[0]
+        return token
 
     def do_POST(self):
         """
@@ -168,15 +96,19 @@ class webhookReceiver(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(message)
         log.debug('gitlab connection should be closed now.')
+
         # parse data
         text = json.loads(data_string)
         text = json.dumps(text, indent=2)
         if git_project in text:
             log.debug('project is in text')
-            self.git_cleanup()
-            current_branches = self.git_handle_branches()
-            self.git_remove_stale_branches(current_branches)
-            log.debug('post complete')
+            token = self.get_token_from_request()
+            headers = {"X-Authentication": token}
+            # DO that thing
+            result = requests.post(hook_url,
+                                   json={"deploy-all": True},
+                                   headers=headers)
+            log.info("Requested redeployment result : %s" % result)
         else:
             log.debug('project name not in text, ignoring post')
 
