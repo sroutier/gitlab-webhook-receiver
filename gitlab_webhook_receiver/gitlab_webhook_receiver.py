@@ -68,7 +68,7 @@ if Config.has_option("general", "ssl_ca_cert") and ssl_verify:
     ssl_verify = Config.get("general", "ssl_ca_cert")
 
 
-listen_port = Config.get("general", "listen_port")
+listen_port = Config.getint("general", "listen_port")
 bind_address = Config.get("general", "bind_address")
 enable_ssl = Config.getboolean("general", "enable_ssl")
 if enable_ssl:
