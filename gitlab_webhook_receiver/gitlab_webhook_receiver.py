@@ -32,6 +32,7 @@ import json
 import logging
 import logging.handlers
 import requests
+import ssl
 import urlparse
 
 try:
@@ -56,11 +57,24 @@ args = arg_parser.parse_args()
 Config = configparser.ConfigParser()
 Config.read(args.config)
 
+log_level = logging.getLevelName(Config.get("general", "log_level")) or "DEBUG"
 log_file = Config.get("general", 'log_file') or "/var/log/gitlab-webhook.log"
+
 git_project = Config.get("general", 'git_project') or "ops"
 hook_url = Config.get("general", 'hook_url')
 
-log_level = logging.getLevelName(Config.get("general", "log_level")) or "DEBUG"
+ssl_verify = Config.getboolean("general", "ssl_verify")
+if Config.hasoption("general", "ssl_ca_cert") and ssl_verify:
+    ssl_verify = Config.get("general", "ssl_ca_cert")
+
+
+listen_port = Config.getboolean("general", "listen_port")
+bind_address = Config.getboolean("general", "bind_address")
+enable_ssl = Config.getboolean("general", "enable_ssl")
+if enable_ssl:
+    keyfile = Config.get("general", 'keyfile')
+    certfile = Config.get("general", 'certfile')
+
 log_max_size = 25165824         # 24 MB
 
 log = logging.getLogger('log')
@@ -107,7 +121,7 @@ class webhookReceiver(BaseHTTPRequestHandler):
             # DO that thing
             result = requests.post(hook_url,
                                    json={"deploy-all": True},
-                                   headers=headers)
+                                   headers=headers, verify=ssl_verify)
             log.info("Requested redeployment result : %s" % result)
         else:
             log.debug('project name not in text, ignoring post')
@@ -124,7 +138,11 @@ def main():
         the main event.
     """
     try:
-        server = HTTPServer(('', 8000), webhookReceiver)
+        server = HTTPServer((bind_address, listen_port), webhookReceiver)
+        if enable_ssl:
+            server.socket = ssl.wrap_socket(server.socket, keyfile=keyfile,
+                                            certfile=certfile,
+                                            server_side=True)
         log.info('started web server...')
         server.serve_forever()
     except KeyboardInterrupt:
