@@ -1,0 +1,2 @@
+fpm --debug-workspace -s python -t deb --config-files etc/gitlab-webhook-receiver.conf .
+fpm --debug-workspace -s python -t rpm --config-files etc/gitlab-webhook-receiver.conf .
