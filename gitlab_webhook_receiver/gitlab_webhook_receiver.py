@@ -2,6 +2,7 @@
 #
 # Copyright (C) 2012 Shawn Sterling <shawn@systemtemplar.org>
 #               2016 Guillaume Espanel <guillaume.espanel@objectif-libre.com>
+#               2017 Sebastien Routier <sroutier@gmail.com>
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -25,12 +26,20 @@
 #
 # For Objectif Libre usage, it's
 # https://github.com/ObjectifLibre/gitlab-webhook-receiver
-
+#
+# For the systemd version with rsync, it's 
+# https://github.com/sroutier/gitlab-webhook-receiver
+#
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 import argparse
 import json
 import logging
 import logging.handlers
+import os
+import sys
+import re
+import shutil
+import subprocess
 import requests
 import ssl
 import urlparse
@@ -61,11 +70,10 @@ log_level = logging.getLevelName(Config.get("general", "log_level")) or "DEBUG"
 log_file = Config.get("general", 'log_file') or "/var/log/gitlab-webhook.log"
 
 git_project = Config.get("general", 'git_project') or "ops"
-hook_url = Config.get("general", 'hook_url')
-
-ssl_verify = Config.getboolean("general", "ssl_verify")
-if Config.has_option("general", "ssl_ca_cert") and ssl_verify:
-    ssl_verify = Config.get("general", "ssl_ca_cert")
+git_target_dir = Config.get("general", 'git_target_dir') or "/tmp/git.target"
+enable_rsync = Config.getboolean("general", 'enable_rsync')
+rsync_target_dir = Config.get("general", 'rsync_target_dir') or "/tmp/rsync.target"
+rsync_parms = Config.get("general", 'rsync_parms') or "-az --delete"
 
 
 listen_port = Config.getint("general", "listen_port")
@@ -87,14 +95,68 @@ f = logging.Formatter("%(asctime)s %(filename)s %(levelname)s %(message)s",
 log_handler.setFormatter(f)
 log.addHandler(log_handler)
 
+pid_file_name = Config.get("general", 'pid_file') or "/var/run/gitlab-webhook-receiver/gitlab-webhook.pid"
+if os.access(pid_file_name, os.F_OK):
+        log.warning("Previous PID file found, checking if process exits.")
+        #if the lockfile is already there then check the PID number
+        #in the lock file
+        pidfile = open(pid_file_name, "r")
+        pidfile.seek(0)
+        old_pid = pidfile.readline()
+        # Now we check the PID from lock file matches to the current
+        # process PID
+        if os.path.exists("/proc/%s" % old_pid):
+                log.error("You already have an instance of the program running with pid: %s", old_pid)
+                sys.exit(1)
+        else:
+                log.warning("Old process %s not found, removing old PID file.", old_pid)
+                os.remove(pid_file_name)
+
+# Create PID file for current process.
+pidfile = open(pid_file_name, "w")
+pidfile.write("%s" % os.getpid())
+pidfile.close()
+
 
 class webhookReceiver(BaseHTTPRequestHandler):
 
-    def get_token_from_request(self):
-        token = urlparse.parse_qs(
-            urlparse.urlparse(self.path).query
-        ).get('token')[0]
-        return token
+    def run_it(self, cmd):
+        """
+            runs a command
+        """
+        p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        log.debug('running:%s' % cmd)
+        p.wait()
+        if p.returncode != 0:
+            log.critical("Non zero exit code:%s executing: %s" % (p.returncode,
+                                                                  cmd))
+        return p.stdout
+
+    def git_cleanup(self):
+        """
+            cleans up the master, does a prune origin
+        """
+        log.debug('git_cleanup begins')
+        os.chdir(git_target_dir)
+        cmd = "git reset --hard HEAD"
+        self.run_it(cmd)
+        cmd = "git pull"
+        self.run_it(cmd)
+        cmd = "git remote prune origin"
+        self.run_it(cmd)
+        log.debug('git_cleanup ends')
+
+
+    def rsync(self):
+        """
+            rsync to target area
+        """
+        log.debug('rsync begins')
+        cmd = "rsync " + rsync_parms + " " + git_target_dir + " " + rsync_target_dir
+        self.run_it(cmd)
+        log.debug('rsync ends')
+
 
     def do_POST(self):
         """
@@ -111,18 +173,19 @@ class webhookReceiver(BaseHTTPRequestHandler):
         self.wfile.write(message)
         log.debug('gitlab connection should be closed now.')
 
+
         # parse data
-        text = json.loads(data_string)
-        text = json.dumps(text, indent=2)
-        if git_project in text:
+        req_json = json.loads(data_string)
+        req_text_pretty = json.dumps(req_json, indent=2)
+        log.debug("Request json pretty dump: %s", req_text_pretty)
+        req_project_name = req_json["project"]["name"]
+        log.debug("REQ Project name: %s", req_project_name)
+        if git_project == req_project_name:
             log.debug('project is in text')
-            token = self.get_token_from_request()
-            headers = {"X-Authentication": token}
-            # DO that thing
-            result = requests.post(hook_url,
-                                   json={"deploy-all": True},
-                                   headers=headers, verify=ssl_verify)
-            log.info("Requested redeployment result : %s" % result)
+            self.git_cleanup()
+            if enable_rsync:
+                self.rsync()
+            log.debug('processing done.')
         else:
             log.debug('project name not in text, ignoring post')
 
@@ -148,6 +211,10 @@ def main():
     except KeyboardInterrupt:
         log.info('ctrl-c pressed, shutting down.')
         server.socket.close()
+        os.remove(pid_file_name)
 
 if __name__ == '__main__':
     main()
+
+
+    

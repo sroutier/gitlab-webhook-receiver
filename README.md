@@ -1,7 +1,9 @@
 # Introduction
 
 gitlab-webhook-receiver is a script to receive http posts from gitlab and then
-pull the latest branches from a git repo.
+pull the latest branches from a git repo. 
+Optionally it can also replicate that pulled git repository to a 3rd location as a backup
+or for any other testing purpuses.
 
 
 # License
@@ -11,35 +13,35 @@ gitlab-webhook-receiver is released under the [GPL v2](http://www.gnu.org/licens
 
 # Documentation
 
-(1) Modify the script
+(1) Modify the config
 ---------------------
 
-Modify the script near the top where it looks like this:
+The configuration file `/etc/gitlab-webhook-receiver.conf` can be modified to suit your needs:
 <pre>
-############################################################
-##### You will likely need to change some of the below #####
+[general]
+log_level=WARNING
+log_file = /var/log/gitlab-webhook-receiver/gitlab-webhook.log
 
-# log file for this script
-log_file = '/var/lib/puppet/gitlab-webhook-receiver/webhook.log'
+bind_address = 0.0.0.0
+listen_port = 8061
 
-# where the puppet base git dir is
-git_dir = "/etc/puppet/environments"
+pid_file = /var/run/gitlab-webhook-receiver/gitlab-webhook.pid
 
-# the puppet master environment
-git_master_dir = "/etc/puppet/environments/master"
+git_project = TestProject01
+git_target_dir = /home/test_user/projects/test/TestProject01
 
-# this is the name of the gitlab project name
-git_project = "newpuppet"
+enable_rsync = true
+rsync_target_dir = /home/other_user/projects
+rsync_parms = -az --delete
 
-# this is the git ssh account
-git_ssh = "git@github.com"
+# enable_ssl : listen_port is HTTPS
+enable_ssl = False
 
-log_max_size = 25165824         # 24 MB
-log_level = logging.INFO
-#log_level = logging.DEBUG      # DEBUG is quite verbose
+# keyfile : path to the SSL key for listen_poprt
+keyfile = "/etc/ssl/private_keys/localhost.pem"
 
-##### You should stop changing things unless you know what you are doing #####
-##############################################################################
+# certfile : path to the SSL cert for listen_poprt
+certfile = "/etc/ssl/certs/localhost.cert"
 </pre>
 
 update it with where your dirs live.
@@ -54,13 +56,7 @@ http://your.ip.goes.here:8000
 or change the port on line 175 of the script.
 
 
-(3) Optional init script
-------------------------
-
-Remember to edit the script if any of your directories were changed.
-
-
-(4) Do initial checkout manually
+(3) Do initial checkout manually
 --------------------------------
 Whatever your git_dir is, do the first checkout manually. The script is made
 to work with a pre-existing setup; and this gives you a chance to make sure
@@ -70,11 +66,13 @@ your permissions/ssh keys are all setup properly.
 # Trouble getting it working?
 
 Let me know what's happening and I'll try to help. Email me at
-shawn@systemtemplar.org.
+sroutier@gmail.com.
 
 
 # Contributing
 
-I'm open to any feedback / patches / suggestions.
+We are open to any feedback / patches / suggestions.
 
-Shawn Sterling shawn@systemtemplar.org
+2012 Shawn Sterling <shawn@systemtemplar.org>
+2016 Guillaume Espanel <guillaume.espanel@objectif-libre.com>
+2017 Sebastien Routier <sroutier@gmail.com>
